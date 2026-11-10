@@ -1,0 +1,82 @@
+import pandas as pd
+import numpy as np
+
+input_csv = "atma24-yob-m1-l2-s2-v2_allspots.csv"
+output_excel = "atma24-yob-m1-l2-s2-v2.xlsx"
+
+pixel_size_um = 0.6214806
+frame_interval_min = 0.1136667
+
+df = pd.read_csv(input_csv, low_memory=False)
+df.columns = df.columns.str.strip()
+
+numeric_cols = ["TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y", "POSITION_T"]
+
+for col in numeric_cols:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+df = df.dropna(subset=["TRACK_ID", "FRAME", "POSITION_X", "POSITION_Y"])
+df = df[df["TRACK_ID"].notna()].copy()
+
+df["x_um"] = df["POSITION_X"] * pixel_size_um
+df["y_um"] = df["POSITION_Y"] * pixel_size_um
+
+
+if "POSITION_T" in df.columns and df["POSITION_T"].notna().sum() > 1:
+    # TrackMate usually exports POSITION_T in seconds
+    time_values = df["POSITION_T"].dropna().sort_values().unique()
+    detected_interval = np.median(np.diff(time_values))
+
+    # Convert seconds to minutes
+    df["time_min"] = df["POSITION_T"] / 60
+
+    print(f"Detected frame interval: {detected_interval:.3f} seconds")
+    print("Using POSITION_T from CSV for time.")
+else:
+    df["time_min"] = df["FRAME"] * frame_interval_min
+    print(f"POSITION_T not found. Using frame_interval_min = {frame_interval_min}")
+
+
+
+results = []
+
+for track_id, track in df.groupby("TRACK_ID"):
+    track = track.sort_values("time_min")
+
+    if len(track) < 2:
+        continue
+
+    x = track["x_um"].to_numpy()
+    y = track["y_um"].to_numpy()
+    t = track["time_min"].to_numpy()
+
+    dx = np.diff(x)
+    dy = np.diff(y)
+    dt = np.diff(t)
+
+    step_dist = np.sqrt(dx**2 + dy**2)
+    speed = step_dist / dt
+
+    path_length = step_dist.sum()
+
+    displacement = np.sqrt(
+        (x[-1] - x[0])**2 +
+        (y[-1] - y[0])**2
+    )
+
+    straightness = displacement / path_length if path_length > 0 else np.nan
+
+    results.append({
+        "TRACK_ID": track_id,
+        "mean_speed": np.nanmean(speed),
+        "displacement": displacement,
+        "path_length": path_length,
+        "straightness": straightness
+    })
+
+out = pd.DataFrame(results)
+out.to_excel(output_excel, index=False)
+
+print(f"Done. Saved: {output_excel}")
+
